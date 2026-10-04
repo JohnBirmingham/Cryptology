@@ -1,0 +1,199 @@
+import base64
+import os
+
+def xtime(a):
+    """Multiply by 2 in GF(2^8)."""
+    a <<= 1
+    return (a ^ 0x1B) & 0xFF if a & 0x100 else a
+
+def gmul(a, b):
+    """Multiply two bytes in GF(2^8)."""
+    result = 0
+    while b:
+        if b & 1:
+            result ^= a
+        a = xtime(a)
+        b >>= 1
+    return result
+
+def rotl8(x, n):
+    return ((x << n) | (x >> (8 - n))) & 0xFF
+
+def build_sboxes():
+    sbox = [0] * 256
+    for x in range(256):
+        # multiplicative inverse (0 maps to 0)
+        inv = next((y for y in range(256) if gmul(x, y) == 1), 0)
+        # affine transformation
+        sbox[x] = inv ^ rotl8(inv, 1) ^ rotl8(inv, 2) ^ rotl8(inv, 3) ^ rotl8(inv, 4) ^ 0x63
+    inv_sbox = [0] * 256
+    for i, v in enumerate(sbox):
+        inv_sbox[v] = i
+    return sbox, inv_sbox
+
+SBOX, INV_SBOX = build_sboxes()
+
+
+def expand_key(key):
+    """Turn the key into one 16-byte round key per round."""
+    if len(key) not in (16, 24, 32):
+        raise ValueError("Key must be 16, 24, or 32 bytes")
+    nk = len(key) // 4
+    nr = nk + 6
+    words = [list(key[4 * i:4 * i + 4]) for i in range(nk)]
+    rcon = 1
+    for i in range(nk, 4 * (nr + 1)):
+        temp = words[i - 1][:]
+        if i % nk == 0:
+            temp = temp[1:] + temp[:1]            # rotate
+            temp = [SBOX[b] for b in temp]        # substitute
+            temp[0] ^= rcon
+            rcon = xtime(rcon)
+        elif nk > 6 and i % nk == 4:
+            temp = [SBOX[b] for b in temp]
+        words.append([a ^ b for a, b in zip(words[i - nk], temp)])
+    return [sum(words[4 * r:4 * r + 4], []) for r in range(nr + 1)]
+
+
+def add_round_key(state, round_key):
+    return [s ^ k for s, k in zip(state, round_key)]
+
+def sub_bytes(state, box):
+    return [box[b] for b in state]
+
+def shift_rows(state):
+    out = [0] * 16
+    for r in range(4):
+        for c in range(4):
+            out[r + 4 * c] = state[r + 4 * ((c + r) % 4)]
+    return out
+
+def inv_shift_rows(state):
+    out = [0] * 16
+    for r in range(4):
+        for c in range(4):
+            out[r + 4 * ((c + r) % 4)] = state[r + 4 * c]
+    return out
+
+def mix_columns(state):
+    out = []
+    for c in range(4):
+        a0, a1, a2, a3 = state[4 * c:4 * c + 4]
+        out += [
+            gmul(a0, 2) ^ gmul(a1, 3) ^ a2 ^ a3,
+            a0 ^ gmul(a1, 2) ^ gmul(a2, 3) ^ a3,
+            a0 ^ a1 ^ gmul(a2, 2) ^ gmul(a3, 3),
+            gmul(a0, 3) ^ a1 ^ a2 ^ gmul(a3, 2),
+        ]
+    return out
+
+def inv_mix_columns(state):
+    out = []
+    for c in range(4):
+        a0, a1, a2, a3 = state[4 * c:4 * c + 4]
+        out += [
+            gmul(a0, 14) ^ gmul(a1, 11) ^ gmul(a2, 13) ^ gmul(a3, 9),
+            gmul(a0, 9) ^ gmul(a1, 14) ^ gmul(a2, 11) ^ gmul(a3, 13),
+            gmul(a0, 13) ^ gmul(a1, 9) ^ gmul(a2, 14) ^ gmul(a3, 11),
+            gmul(a0, 11) ^ gmul(a1, 13) ^ gmul(a2, 9) ^ gmul(a3, 14),
+        ]
+    return out
+
+def encrypt_block(block, round_keys):
+    state = add_round_key(list(block), round_keys[0])
+    for r in range(1, len(round_keys) - 1):
+        state = sub_bytes(state, SBOX)
+        state = shift_rows(state)
+        state = mix_columns(state)
+        state = add_round_key(state, round_keys[r])
+    state = sub_bytes(state, SBOX)
+    state = shift_rows(state)
+    state = add_round_key(state, round_keys[-1])
+    return bytes(state)
+
+def decrypt_block(block, round_keys):
+    state = add_round_key(list(block), round_keys[-1])
+    for r in range(len(round_keys) - 2, 0, -1):
+        state = inv_shift_rows(state)
+        state = sub_bytes(state, INV_SBOX)
+        state = add_round_key(state, round_keys[r])
+        state = inv_mix_columns(state)
+    state = inv_shift_rows(state)
+    state = sub_bytes(state, INV_SBOX)
+    state = add_round_key(state, round_keys[0])
+    return bytes(state)
+
+def pad(data):
+    n = 16 - len(data) % 16
+    return data + bytes([n]) * n
+
+def unpad(data):
+    n = data[-1]
+    if n < 1 or n > 16 or data[-n:] != bytes([n]) * n:
+        raise ValueError("Bad padding (wrong key or corrupted data)")
+    return data[:-n]
+
+def AES_Encryption(data, key):
+    round_keys = expand_key(key)
+    iv = os.urandom(16)
+    data = pad(data)
+    prev = iv
+    out = b''
+    for i in range(0, len(data), 16):
+        block = bytes(a ^ b for a, b in zip(data[i:i + 16], prev))
+        prev = encrypt_block(block, round_keys)
+        out += prev
+    return iv + out
+
+def AES_Decryption(enc_data, key):
+    round_keys = expand_key(key)
+    iv, enc_data = enc_data[:16], enc_data[16:]
+    prev = iv
+    out = b''
+    for i in range(0, len(enc_data), 16):
+        block = enc_data[i:i + 16]
+        out += bytes(a ^ b for a, b in zip(decrypt_block(block, round_keys), prev))
+        prev = block
+    return unpad(out)
+
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+def AES_Encryption_File(path, key):
+    # Look next to the script, not in the current working directory
+    full_path = path if os.path.isabs(path) else os.path.join(BASE_DIR, path)
+    with open(full_path, 'rb') as f:
+        data = f.read()
+    if not data:
+        raise ValueError(f"{full_path} is empty. Add some text and save it.")
+    return AES_Encryption(base64.b64encode(data), key)
+
+def AES_Decryption_File(enc_data, key, out_path=None):
+    # Accept either raw bytes or a path to an encrypted file
+    if isinstance(enc_data, str):
+        with open(enc_data, 'rb') as f:
+            enc_data = f.read()
+    dec = AES_Decryption(enc_data, key)
+    if out_path:
+        with open(out_path, 'wb') as f:
+            f.write(base64.b64decode(dec))
+    return dec
+
+
+if __name__ == "__main__":
+    key = b'1234sfsfdsafasdf'
+    plaintext = b'Hello World'
+    plaintext = base64.b64encode(plaintext)
+    print(plaintext)
+
+    enc_message = AES_Encryption(plaintext, key)
+    print(enc_message)
+    original_message = AES_Decryption(enc_message, key)
+    print(plaintext == original_message)
+
+    enc_file = AES_Encryption_File('hello.txt', key)
+    print(enc_file)
+
+    dec_file = AES_Decryption_File(enc_file, key)
+    dec_file = base64.b64decode(dec_file)
+    print(dec_file)
