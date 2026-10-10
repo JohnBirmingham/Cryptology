@@ -1,0 +1,70 @@
+import random
+ 
+def key_gen():
+    key = ""
+    i = 1
+    while i < 54:
+        if i%9 == 0:
+            key += " "
+        else:
+            key += random.choice(["0", "1"])
+        i += 1
+    return key
+ 
+def msg_to_bin(msg):
+    bin_msg = ""
+    for i, c in enumerate(msg):
+        binary_val = f"{ord(c):08b}"
+        if len(msg)-1 == i:
+            bin_msg += binary_val
+        else:
+            bin_msg += binary_val + ' '
+    return bin_msg
+ 
+def encode(bin_msg, key):
+    enc_msg = ""
+    for i, c in enumerate(bin_msg):   
+        if c == ' ':
+            enc_msg += " "
+        elif c == key[i]:
+            enc_msg += "0"
+        else:
+            enc_msg += "1"
+    return enc_msg
+def decode(enc_msg, key):
+    dec_msg = ""
+    for i, c in enumerate(enc_msg):
+        if c == ' ':
+            dec_msg += ' '
+        elif c == key[i]:
+            dec_msg += "0"
+        else:
+            dec_msg += "1"
+    return dec_msg
+print("Choose one option: \n1. encode\n2. decode\n3. test(designed to allow for you to put everything together)")
+choice = input("Enter: ")
+if choice == 1:
+    print("Enter a six letter word")
+    msg = input("Enter: ")
+    key = key_gen()
+    print("The key is: " + key)
+    bin_msg=msg_to_bin(msg)
+    print("This msg is: " + bin_msg)
+    enc_msg=encode(bin_msg, key)
+    print("This enc msg: " + enc_msg)
+elif choice == 2:
+    key = input("Please put the key here: ")
+    enc_msg = input("Please put the encoded mesage here: ")
+    bin_msg = decode(enc_msg, key)
+    print(bin_msg)
+else:
+    print("Enter a six letter word")
+    msg = input("Enter: ")
+    key = key_gen()
+    print("The key is:   " + key)
+    bin_msg=msg_to_bin(msg)
+    print("This msg is:  " + bin_msg)
+    enc_msg=encode(bin_msg, key)
+    print("This enc msg: " + enc_msg)
+    bin_msg = decode(enc_msg, key)
+    print("This dec msg: " + bin_msg)
